@@ -4,6 +4,8 @@ const app = require('./src/app');
 const connectDB = require('./src/config/database');
 const config = require('./src/config/environment');
 const logger = require('./src/utils/logger');
+const User = require('./src/models/User'); // Add this import
+const jwt = require('jsonwebtoken'); // Add this import
 
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -19,32 +21,58 @@ const io = socketIO(server, {
 const activeUsers = new Map();
 
 // Socket.io middleware for authentication
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
     return next(new Error('Authentication error'));
   }
-  socket.userId = token; // In production, verify JWT here
-  next();
+  
+  try {
+    // Verify JWT token and extract userId
+    const decoded = jwt.verify(token, config.jwtSecret);
+    socket.userId = decoded.userId;
+    next();
+  } catch (error) {
+    return next(new Error('Invalid token'));
+  }
 });
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const userId = socket.userId;
   activeUsers.set(userId, socket.id);
 
   logger.info(`User connected: ${userId} (Socket: ${socket.id})`);
 
-  // User comes online
-  socket.on('user:online', (data) => {
-    socket.join(`user:${userId}`);
+  // Automatically set user online when they connect
+  try {
+    await User.findByIdAndUpdate(userId, { status: 'online', lastSeen: new Date() });
     io.emit('user:status-changed', { userId, status: 'online', timestamp: new Date() });
-    logger.info(`User ${userId} is now online`);
+    logger.info(`User ${userId} is now online (auto-updated in DB)`);
+  } catch (error) {
+    logger.error(`Error setting user online: ${error.message}`);
+  }
+
+  // User comes online (manual trigger)
+  socket.on('user:online', async (data) => {
+    socket.join(`user:${userId}`);
+    try {
+      await User.findByIdAndUpdate(userId, { status: 'online', lastSeen: new Date() });
+      io.emit('user:status-changed', { userId, status: 'online', timestamp: new Date() });
+      logger.info(`User ${userId} is now online`);
+    } catch (error) {
+      logger.error(`Error updating user status: ${error.message}`);
+    }
   });
 
-  // User goes offline
-  socket.on('user:offline', (data) => {
-    io.emit('user:status-changed', { userId, status: 'offline', timestamp: new Date() });
-    logger.info(`User ${userId} is now offline`);
+  // User goes offline (manual trigger)
+  socket.on('user:offline', async (data) => {
+    try {
+      await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen: new Date() });
+      io.emit('user:status-changed', { userId, status: 'offline', timestamp: new Date() });
+      logger.info(`User ${userId} is now offline`);
+    } catch (error) {
+      logger.error(`Error updating user status: ${error.message}`);
+    }
   });
 
   // Join conversation room
@@ -148,11 +176,20 @@ io.on('connection', (socket) => {
     logger.info(`Call ended by ${userId}`);
   });
 
-  // Disconnect
-  socket.on('disconnect', () => {
+  // Disconnect - UPDATE DATABASE
+  socket.on('disconnect', async () => {
     activeUsers.delete(userId);
+    
+    try {
+      // Update user status to offline in database
+      await User.findByIdAndUpdate(userId, { status: 'offline', lastSeen: new Date() });
+      io.emit('user:status-changed', { userId, status: 'offline', timestamp: new Date() });
+      logger.info(`User disconnected and set offline: ${userId}`);
+    } catch (error) {
+      logger.error(`Error updating user status on disconnect: ${error.message}`);
+    }
+    
     io.emit('user:disconnected', { userId });
-    logger.info(`User disconnected: ${userId}`);
   });
 
   // Error handling
@@ -186,3 +223,5 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+
+module.exports = { server, io };

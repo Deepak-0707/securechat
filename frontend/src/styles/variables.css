@@ -1,0 +1,22 @@
+:root {
+  --primary-color: #667eea;
+  --primary-dark: #5568d3;
+  --secondary-color: #764ba2;
+  --background: #f5f5f5;
+  --surface: #ffffff;
+  --surface-dark: #f9f9f9;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --border-color: #e0e0e0;
+  --success: #4caf50;
+  --error: #f44336;
+  --warning: #ff9800;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.15);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
