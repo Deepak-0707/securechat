@@ -1,42 +1,43 @@
 import CryptoJS from 'crypto-js';
 
-// RSA simulation using CryptoJS (for client-side encryption)
-export const generateKeyPair = async () => {
-  // In production, use tweetnacl or libsodium
-  const publicKey = CryptoJS.lib.WordArray.random(128).toString();
-  const privateKey = CryptoJS.lib.WordArray.random(128).toString();
-  
-  return { publicKey, privateKey };
-};
-
 // Encrypt message with AES
 export const encryptMessage = (message, password) => {
   try {
+    if (!password) {
+      console.error('No password provided for encryption');
+      return null;
+    }
+
     const encrypted = CryptoJS.AES.encrypt(
       JSON.stringify(message),
       password
     ).toString();
-    
-    return {
-      encrypted,
-      iv: CryptoJS.lib.WordArray.random(128).toString(),
-      salt: CryptoJS.lib.WordArray.random(64).toString(),
-      tag: CryptoJS.lib.WordArray.random(128).toString()
-    };
+
+    return encrypted;
   } catch (error) {
     console.error('Encryption error:', error);
     return null;
   }
 };
 
-// Decrypt message
+// Decrypt message - FIXED VERSION
 export const decryptMessage = (encryptedData, password) => {
   try {
+    if (!encryptedData || !password) {
+      console.error('Missing encrypted data or password');
+      return null;
+    }
+
     const decrypted = CryptoJS.AES.decrypt(
       encryptedData,
       password
     ).toString(CryptoJS.enc.Utf8);
-    
+
+    if (!decrypted) {
+      console.error('Decryption failed - empty result. Wrong key?');
+      return null;
+    }
+
     return JSON.parse(decrypted);
   } catch (error) {
     console.error('Decryption error:', error);
@@ -54,29 +55,40 @@ export const generateRandomString = (length = 32) => {
   return CryptoJS.lib.WordArray.random(length).toString();
 };
 
-// Store encryption keys securely
-export const storeEncryptionKey = (key) => {
-  localStorage.setItem('encryptionKey', key);
+// Store conversation-specific encryption key
+export const storeConversationKey = (conversationId, key) => {
+  localStorage.setItem(`conv_key_${conversationId}`, key);
+  console.log(`✅ Stored encryption key for conversation: ${conversationId}`);
 };
 
-export const getEncryptionKey = () => {
-  let key = localStorage.getItem('encryptionKey');
-  
-  // If no key exists, generate and store one
+// Get conversation-specific encryption key
+export const getConversationKey = (conversationId) => {
+  const key = localStorage.getItem(`conv_key_${conversationId}`);
   if (!key) {
-    key = generateRandomString(32);
-    storeEncryptionKey(key);
-    console.log('🔑 Generated new encryption key');
+    console.warn(`⚠️ No encryption key found for conversation: ${conversationId}`);
   }
-  
   return key;
 };
 
-export const removeEncryptionKey = () => {
-  localStorage.removeItem('encryptionKey');
+// Keep this for backwards compatibility (maps to conversation key)
+export const getEncryptionKey = () => {
+  console.warn('⚠️ getEncryptionKey() is deprecated. Use getConversationKey(conversationId) instead');
+  return null;
 };
 
-// Initialize encryption key on app load
-export const initializeEncryption = () => {
-  getEncryptionKey(); // This will auto-generate if needed
+// Clear conversation key (optional - when leaving conversation)
+export const removeConversationKey = (conversationId) => {
+  localStorage.removeItem(`conv_key_${conversationId}`);
+  console.log(`🗑️ Removed encryption key for conversation: ${conversationId}`);
+};
+
+// Clear all conversation keys (optional - on logout)
+export const removeAllConversationKeys = () => {
+  const keys = Object.keys(localStorage);
+  keys.forEach(key => {
+    if (key.startsWith('conv_key_')) {
+      localStorage.removeItem(key);
+    }
+  });
+  console.log('🗑️ Removed all conversation keys');
 };

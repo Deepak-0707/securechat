@@ -74,6 +74,9 @@ export const chatAPI = {
   getConversations: () => api.get('/chat/conversations'),
   getMessages: (conversationId, page = 1, limit = 50) => 
     api.get(`/chat/conversations/${conversationId}/messages?page=${page}&limit=${limit}`),
+  // NEW: Fetch encryption key for a conversation
+  getEncryptionKey: (conversationId) =>
+    api.get(`/chat/conversations/${conversationId}/encryption-key`),
   sendMessage: (data) => api.post('/chat/messages', data),
   markAsRead: (messageIds) => api.post('/chat/messages/mark-read', { messageIds }),
   deleteMessage: (messageId) => api.delete(`/chat/messages/${messageId}`)

@@ -110,71 +110,79 @@ io.on('connection', async (socket) => {
     io.to(`conversation:${conversationId}`).emit('typing:inactive', { userId: typingUserId });
   });
 
-  // WebRTC Call events
   socket.on('call:initiate', (data) => {
-    const { to, from, offer, callId } = data;
-    const recipientSocketId = activeUsers.get(to);
-    
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('call:incoming', {
-        from,
-        offer,
-        callId,
-        timestamp: new Date(),
-      });
-      logger.info(`Call initiated from ${from} to ${to}`);
-    } else {
-      socket.emit('call:rejected', { reason: 'User offline', callId });
-      logger.info(`Call failed: User ${to} is offline`);
-    }
-  });
+  const { recipientId, conversationId, offer, isVideo, callId } = data;
+  const recipientSocketId = activeUsers.get(recipientId);
+  
+  if (recipientSocketId) {
+    io.to(recipientSocketId).emit('call:incoming', {
+      callId: callId || 'call_' + Date.now(),
+      callerId: userId,
+      conversationId,
+      offer,
+      isVideo,
+      timestamp: new Date(),
+    });
+    logger.info(`Call initiated from ${userId} to ${recipientId}`);
+  } else {
+    socket.emit('call:rejected', { 
+      reason: 'User offline', 
+      callId: callId || 'call_' + Date.now()
+    });
+    logger.info(`Call failed: User ${recipientId} is offline`);
+  }
+});
 
-  socket.on('call:answer', (data) => {
-    const { to, from, answer, callId } = data;
-    const callerSocketId = activeUsers.get(to);
-    
-    if (callerSocketId) {
-      io.to(callerSocketId).emit('call:answered', {
-        from,
-        answer,
-        callId,
-        timestamp: new Date(),
-      });
-      logger.info(`Call answered by ${from}`);
-    }
-  });
+socket.on('call:answer', (data) => {
+  const { callId, callerId, conversationId, answer, isVideo } = data;
+  const callerSocketId = activeUsers.get(callerId);
+  
+  if (callerSocketId) {
+    io.to(callerSocketId).emit('call:answered', {
+      callId,
+      conversationId,
+      answer,
+      isVideo,
+      timestamp: new Date(),
+    });
+    logger.info(`Call answered by ${userId}`);
+  }
+});
 
-  socket.on('call:reject', (data) => {
-    const { to, reason, callId } = data;
-    const callerSocketId = activeUsers.get(to);
-    
-    if (callerSocketId) {
-      io.to(callerSocketId).emit('call:rejected', {
-        reason: reason || 'Call declined',
-        callId,
-      });
-      logger.info(`Call rejected by ${userId}`);
-    }
-  });
+socket.on('call:reject', (data) => {
+  const { callId, recipientId, reason } = data;
+  const recipientSocketId = activeUsers.get(recipientId);
+  
+  if (recipientSocketId) {
+    io.to(recipientSocketId).emit('call:rejected', {
+      reason: reason || 'Call declined',
+      callId,
+    });
+    logger.info(`Call rejected by ${userId}`);
+  }
+});
 
-  socket.on('ice:candidate', (data) => {
-    const { to, candidate, callId } = data;
-    const recipientSocketId = activeUsers.get(to);
-    
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('ice:candidate', { candidate, callId });
-    }
-  });
+socket.on('ice:candidate', (data) => {
+  const { recipientId, candidate, callId } = data;
+  const recipientSocketId = activeUsers.get(recipientId);
+  
+  if (recipientSocketId) {
+    io.to(recipientSocketId).emit('ice:candidate', { 
+      candidate, 
+      callId 
+    });
+  }
+});
 
-  socket.on('call:end', (data) => {
-    const { to, callId } = data;
-    const recipientSocketId = activeUsers.get(to);
-    
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('call:ended', { callId });
-    }
-    logger.info(`Call ended by ${userId}`);
-  });
+socket.on('call:end', (data) => {
+  const { recipientId, callId } = data;
+  const recipientSocketId = activeUsers.get(recipientId);
+  
+  if (recipientSocketId) {
+    io.to(recipientSocketId).emit('call:ended', { callId });
+  }
+  logger.info(`Call ended by ${userId}`);
+});
 
   // Disconnect - UPDATE DATABASE
   socket.on('disconnect', async () => {

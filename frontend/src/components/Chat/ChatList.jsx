@@ -3,6 +3,7 @@ import { useChat } from '../../hooks/useChat.js';
 import { useAuth } from '../../hooks/useAuth.js';
 import { formatTime } from '../../utils/helpers.js';
 import { FiPlus } from 'react-icons/fi';
+import { getConversationKey, decryptMessage } from '../../services/encryption.js';
 import toast from 'react-hot-toast';
 
 export function ChatList({ onSelectConversation }) {
@@ -37,6 +38,30 @@ export function ChatList({ onSelectConversation }) {
     return 'Unknown User';
   };
 
+  // NEW: Get decrypted preview text
+  const getMessagePreview = (conv) => {
+    if (!conv.lastMessage || !conv.lastMessage.encryptedContent) {
+      return 'No messages';
+    }
+
+    try {
+      const key = getConversationKey(conv._id);
+      if (!key) {
+        return '[Encrypted message]';
+      }
+
+      const decrypted = decryptMessage(conv.lastMessage.encryptedContent, key);
+      if (decrypted && decrypted.text) {
+        return decrypted.text.substring(0, 50) + (decrypted.text.length > 50 ? '...' : '');
+      } else {
+        return '[Encrypted message]';
+      }
+    } catch (error) {
+      console.error('Error decrypting preview:', error);
+      return '[Encrypted message]';
+    }
+  };
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -66,7 +91,7 @@ export function ChatList({ onSelectConversation }) {
                   {getConversationName(conv)}
                 </h3>
                 <p style={styles.preview}>
-                  {conv.lastMessage?.encryptedContent?.substring(0, 40) + '...' || 'No messages'}
+                  {getMessagePreview(conv)}
                 </p>
               </div>
               <span style={styles.time}>

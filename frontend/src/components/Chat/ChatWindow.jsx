@@ -1,18 +1,53 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../hooks/useAuth.js';
 import { useChat } from '../../hooks/useChat.js';
+import { useCall } from '../../hooks/useCall.js';
 import { useSocket } from '../../hooks/useSocket.js';
-import { useEncryption } from '../../hooks/useEncryption.js';
 import { formatTime } from '../../utils/helpers.js';
 import { FiSend, FiPhone, FiVideo } from 'react-icons/fi';
+import { chatAPI } from '../../services/api.js';
+import { storeConversationKey, getConversationKey, decryptMessage, encryptMessage } from '../../services/encryption.js';
+import { callHandler } from "./CallHandler.js";
+import { CallModal } from './CallModels.jsx';
+import CryptoJS from 'crypto-js';
 import toast from 'react-hot-toast';
 
 export function ChatWindow({ conversationId, recipientName }) {
   const { user } = useAuth();
   const { messages, setMessages, sendMessage, fetchMessages } = useChat();
-  const { encrypt, decrypt } = useEncryption();
   const [messageInput, setMessageInput] = useState('');
   const [typingUsers, setTypingUsers] = useState(new Set());
+  const [keyLoaded, setKeyLoaded] = useState(false);
+
+  // ADDED: Fetch and store encryption key when conversation loads
+  useEffect(() => {
+    if (conversationId) {
+      const loadEncryptionKey = async () => {
+        try {
+          console.log('🔐 Fetching encryption key for conversation:', conversationId);
+          const response = await chatAPI.getEncryptionKey(conversationId);
+          
+          console.log('📦 Response:', response);
+          
+          if (response.data && response.data.encryptionKey) {
+            storeConversationKey(conversationId, response.data.encryptionKey);
+            setKeyLoaded(true);
+            console.log('✅ Encryption key loaded and stored:', response.data.encryptionKey.substring(0, 10) + '...');
+            toast.success('Encryption key loaded');
+          } else {
+            console.error('❌ No encryption key in response');
+            toast.error('No encryption key received');
+          }
+        } catch (error) {
+          console.error('❌ Failed to load encryption key:', error);
+          console.error('Error details:', error.response?.data || error.message);
+          toast.error('Failed to load encryption key: ' + (error.response?.data?.message || error.message));
+        }
+      };
+
+      loadEncryptionKey();
+    }
+  }, [conversationId]);
 
   // Load messages when conversation changes
   useEffect(() => {
@@ -43,19 +78,37 @@ export function ChatWindow({ conversationId, recipientName }) {
     e.preventDefault();
     if (!messageInput.trim()) return;
 
+    // ADDED: Check if encryption key is loaded
+    if (!keyLoaded) {
+      toast.error('Encryption key not ready. Please wait...');
+      return;
+    }
+
     try {
-      const encryptedData = encrypt({ text: messageInput });
-      if (!encryptedData) {
+      // MODIFIED: Get conversation-specific key
+      const key = getConversationKey(conversationId);
+      if (!key) {
+        toast.error('Encryption key not found');
+        return;
+      }
+
+      // Encrypt with conversation key
+      const message = { text: messageInput };
+      const encryptedContent = CryptoJS.AES.encrypt(
+        JSON.stringify(message),
+        key
+      ).toString();
+
+      if (!encryptedContent) {
         toast.error('Encryption failed');
         return;
       }
 
       await sendMessage(conversationId, {
-        encryptedContent: encryptedData.encrypted,
+        encryptedContent: encryptedContent,
         encryptionMetadata: {
-          iv: encryptedData.iv,
-          salt: encryptedData.salt,
-          tag: encryptedData.tag
+          algorithm: 'AES',
+          version: '1'
         },
         messageType: 'text'
       });
@@ -71,15 +124,22 @@ export function ChatWindow({ conversationId, recipientName }) {
     // Emit typing event to socket
   };
 
-  // Decrypt and format messages for display
+  // MODIFIED: Decrypt messages using conversation-specific key
   const displayMessages = messages.map(msg => {
     let decryptedText = 'Could not decrypt message';
     
     try {
       if (msg.encryptedContent) {
-        const decrypted = decrypt(msg.encryptedContent);
-        if (decrypted && decrypted.text) {
-          decryptedText = decrypted.text;
+        const key = getConversationKey(conversationId);
+        if (key) {
+          const decrypted = decryptMessage(msg.encryptedContent, key);
+          if (decrypted && decrypted.text) {
+            decryptedText = decrypted.text;
+          } else {
+            console.warn('⚠️ Decryption returned empty result for message:', msg._id);
+          }
+        } else {
+          console.warn('⚠️ No encryption key available for decryption');
         }
       }
     } catch (error) {
@@ -100,7 +160,10 @@ export function ChatWindow({ conversationId, recipientName }) {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h2 style={styles.name}>{recipientName}</h2>
+        <div>
+          <h2 style={styles.name}>{recipientName}</h2>
+          {!keyLoaded && <p style={styles.loadingText}>Loading encryption...</p>}
+        </div>
         <div style={styles.actions}>
           <button style={styles.iconButton}><FiPhone size={20} /></button>
           <button style={styles.iconButton}><FiVideo size={20} /></button>
@@ -145,10 +208,15 @@ export function ChatWindow({ conversationId, recipientName }) {
             setMessageInput(e.target.value);
             handleTyping();
           }}
-          placeholder="Type a message..."
+          placeholder={keyLoaded ? "Type a message..." : "Loading encryption..."}
           style={styles.input}
+          disabled={!keyLoaded}
         />
-        <button type="submit" style={styles.sendButton}>
+        <button 
+          type="submit" 
+          style={styles.sendButton}
+          disabled={!keyLoaded}
+        >
           <FiSend size={20} />
         </button>
       </form>
@@ -176,6 +244,11 @@ const styles = {
     fontWeight: '600',
     color: 'var(--text-primary)',
     margin: 0
+  },
+  loadingText: {
+    fontSize: '12px',
+    color: 'var(--text-secondary)',
+    margin: '4px 0 0 0'
   },
   actions: {
     display: 'flex',
