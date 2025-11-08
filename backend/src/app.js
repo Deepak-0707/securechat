@@ -8,7 +8,6 @@ const errorHandler = require('./middleware/errorHandler');
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const webrtcRoutes = require('./routes/webrtcRoutes');
 
 const app = express();
 
@@ -37,7 +36,6 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
-app.use('/api/webrtc', webrtcRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

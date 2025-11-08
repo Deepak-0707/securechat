@@ -98,37 +98,6 @@ socketBob.on('typing:inactive', (data) => {
   console.log('✋ Bob sees: Typing stopped -', data);
 });
 
-// Test 6: WebRTC Call
-setTimeout(() => {
-  console.log('\n--- TEST 6: WebRTC Call Initiate ---');
-  socketAlice.emit('call:initiate', {
-    to: '68f09fe283a525566e68bd01',
-    from: '68f09fd283a525566e68bcfe',
-    offer: { type: 'offer', sdp: 'v=0...' },
-    callId: 'call_12345'
-  });
-  console.log('Alice initiating call to Bob');
-}, 6000);
-
-socketBob.on('call:incoming', (data) => {
-  console.log('📞 Bob received call from:', data.from);
-});
-
-// Test 7: WebRTC Answer
-setTimeout(() => {
-  console.log('\n--- TEST 7: WebRTC Call Answer ---');
-  socketBob.emit('call:answer', {
-    to: '68f09fd283a525566e68bcfe',
-    from: '68f09fe283a525566e68bd01',
-    answer: { type: 'answer', sdp: 'v=0...' },
-    callId: 'call_12345'
-  });
-  console.log('Bob answered call');
-}, 7000);
-
-socketAlice.on('call:answered', (data) => {
-  console.log('✅ Alice sees: Call answered by:', data.from);
-});
 
 // Test 8: User disconnects
 setTimeout(() => {

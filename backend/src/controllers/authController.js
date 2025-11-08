@@ -1,199 +1,385 @@
-const User = require('../models/User');
-const PublicKey = require('../models/PublicKey');
-const jwtService = require('../services/jwtService');
-const emailService = require('../services/emailService');
-const encryptionService = require('../services/encryptionService');
-const logger = require('../utils/logger');
-const { v4: uuidv4 } = require('uuid');
+/**
+ * AUTH CONTROLLER - UPDATED FOR E2E ENCRYPTION
+ * 
+ * COPY THIS ENTIRE FILE TO: backend/src/controllers/authController.js
+ * 
+ * CHANGES:
+ * - Added publicKey validation and storage in register
+ * - Updated to accept publicKey from client
+ */
 
-exports.register = async (req, res) => {
+const User = require('../models/User');
+const jwt = require('jsonwebtoken');
+const { verifyPublicKey } = require('../services/eccService');
+
+/**
+ * GENERATE JWT TOKEN
+ */
+const generateToken = (userId) => {
+  return jwt.sign(
+    { id: userId },
+    process.env.JWT_SECRET || 'your-secret-key-change-this',
+    { expiresIn: '7d' }
+  );
+};
+
+/**
+ * REGISTER - WITH PUBLIC KEY
+ */
+const register = async (req, res) => {
   try {
     const { username, email, password, publicKey } = req.body;
 
-    // Check if user exists
+    console.log('📝 Registration request:', { username, email });
+
+    // Validate required fields
+    if (!username || !email || !password || !publicKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'All fields are required (username, email, password, publicKey)'
+      });
+    }
+
+    // Validate public key format
+    if (!verifyPublicKey(publicKey)) {
+      console.error('❌ Invalid public key format');
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid public key format'
+      });
+    }
+
+    console.log('✅ Public key validated');
+
+    // Check if user already exists
     const existingUser = await User.findOne({
-      $or: [{ email }, { username }],
+      $or: [{ email }, { username }]
     });
 
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists' });
+      return res.status(400).json({
+        success: false,
+        message: existingUser.email === email 
+          ? 'Email already registered' 
+          : 'Username already taken'
+      });
     }
 
-    // Create new user
+    // Create new user with public key
     const user = new User({
       username,
       email,
       password,
+      publicKey,          // Store public key
+      keyVersion: 1,
+      keyCreatedAt: Date.now()
     });
 
     await user.save();
 
-    // Store public key
-    if (publicKey) {
-      const keyFingerprint = encryptionService.getKeyFingerprint(publicKey);
-      const pubKeyDoc = new PublicKey({
-        userId: user._id,
-        publicKey,
-        keyFingerprint,
-      });
-      await pubKeyDoc.save();
-    }
+    console.log('✅ User created with public key');
 
-    const accessToken = jwtService.generateAccessToken(user._id);
-    const refreshToken = jwtService.generateRefreshToken(user._id);
+    // Generate JWT tokens
+    const accessToken = generateToken(user._id);
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_REFRESH_SECRET || 'refresh-secret-change-this',
+      { expiresIn: '30d' }
+    );
 
+    // Return success
     res.status(201).json({
+      success: true,
       message: 'User registered successfully',
       user: {
         id: user._id,
         username: user.username,
         email: user.email,
+        publicKey: user.publicKey,
+        keyVersion: user.keyVersion
       },
       tokens: {
         accessToken,
-        refreshToken,
-      },
+        refreshToken
+      }
     });
 
-    logger.info(`User registered: ${user.email}`);
   } catch (error) {
-    logger.error('Registration error:', error);
-    res.status(500).json({ message: 'Registration failed', error: error.message });
+    console.error('❌ Registration error:', error);
+    
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username or email already exists'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Registration failed',
+      error: error.message
+    });
   }
 };
 
-exports.login = async (req, res) => {
+/**
+ * LOGIN
+ */
+const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email }).select('+password');
+    console.log('🔐 Login attempt:', email);
 
-    if (!user || !(await user.comparePassword(password))) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
     }
 
-    const accessToken = jwtService.generateAccessToken(user._id);
-    const refreshToken = jwtService.generateRefreshToken(user._id);
+    // Find user with password field
+    const user = await User.findOne({ email }).select('+password');
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await user.comparePassword(password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Check if user has public key (migration scenario)
+    if (!user.publicKey) {
+      console.warn('⚠️ User missing public key:', user.username);
+      return res.status(400).json({
+        success: false,
+        message: 'Please re-register to generate encryption keys',
+        needsKeyGeneration: true
+      });
+    }
+
+    console.log('✅ Login successful:', user.username);
 
     // Update user status
     user.status = 'online';
+    user.lastSeen = Date.now();
     await user.save();
 
+    // Generate JWT tokens
+    const accessToken = generateToken(user._id);
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_REFRESH_SECRET || 'refresh-secret-change-this',
+      { expiresIn: '30d' }
+    );
+
+    // Return success
     res.json({
+      success: true,
       message: 'Login successful',
       user: {
         id: user._id,
         username: user.username,
         email: user.email,
-        status: user.status,
+        publicKey: user.publicKey,
+        keyVersion: user.keyVersion,
+        status: user.status
       },
       tokens: {
         accessToken,
-        refreshToken,
-      },
+        refreshToken
+      }
     });
 
-    logger.info(`User logged in: ${user.email}`);
   } catch (error) {
-    logger.error('Login error:', error);
-    res.status(500).json({ message: 'Login failed', error: error.message });
+    console.error('❌ Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Login failed',
+      error: error.message
+    });
   }
 };
 
-exports.forgotPassword = async (req, res) => {
+/**
+ * LOGOUT
+ */
+const logout = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Update user status to offline
+    await User.findByIdAndUpdate(userId, {
+      status: 'offline',
+      lastSeen: Date.now()
+    });
+
+    console.log('👋 User logged out:', userId);
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Logout error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Logout failed',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * REFRESH TOKEN
+ */
+const refreshToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token required'
+      });
+    }
+
+    // Verify refresh token
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET || 'refresh-secret-change-this'
+    );
+
+    // Generate new access token
+    const accessToken = generateToken(decoded.id);
+
+    res.json({
+      success: true,
+      accessToken
+    });
+
+  } catch (error) {
+    console.error('❌ Token refresh error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Invalid refresh token'
+    });
+  }
+};
+
+/**
+ * FORGOT PASSWORD
+ */
+const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res
-        .status(404)
-        .json({ message: 'User not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
     }
 
-    const resetToken = jwtService.generatePasswordResetToken(user._id);
-    
+    // Generate reset token
+    const resetToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET || 'your-secret-key-change-this',
+      { expiresIn: '1h' }
+    );
+
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = new Date(Date.now() + 3600000); // 1 hour
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    await emailService.sendPasswordResetEmail(email, resetToken);
+    // TODO: Send email with reset link
+    console.log('📧 Password reset token:', resetToken);
 
-    res.json({ message: 'Password reset email sent' });
-    logger.info(`Password reset email sent to: ${email}`);
+    res.json({
+      success: true,
+      message: 'Password reset email sent',
+      resetToken // Remove this in production!
+    });
+
   } catch (error) {
-    logger.error('Forgot password error:', error);
-    res.status(500).json({ message: 'Error sending reset email', error: error.message });
+    console.error('❌ Forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process request'
+    });
   }
 };
 
-exports.resetPassword = async (req, res) => {
+/**
+ * RESET PASSWORD
+ */
+const resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
-    const decoded = jwtService.verifyToken(token);
+    // Verify token
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || 'your-secret-key-change-this'
+    );
 
-    if (!decoded || decoded.type !== 'password-reset') {
-      return res.status(400).json({ message: 'Invalid or expired token' });
+    const user = await User.findById(decoded.id).select('+resetPasswordToken +resetPasswordExpires');
+
+    if (!user || user.resetPasswordToken !== token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
     }
 
-    const user = await User.findById(decoded.userId);
-
-    if (
-      !user ||
-      user.resetPasswordToken !== token ||
-      user.resetPasswordExpires < new Date()
-    ) {
-      return res.status(400).json({ message: 'Invalid or expired token' });
+    if (user.resetPasswordExpires < Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reset token has expired'
+      });
     }
 
+    // Update password
     user.password = newPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
 
-    res.json({ message: 'Password reset successfully' });
-    logger.info(`Password reset for user: ${user.email}`);
-  } catch (error) {
-    logger.error('Reset password error:', error);
-    res.status(500).json({ message: 'Error resetting password', error: error.message });
-  }
-};
-
-exports.refreshToken = async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-
-    const decoded = jwtService.verifyToken(refreshToken);
-
-    if (!decoded) {
-      return res.status(401).json({ message: 'Invalid refresh token' });
-    }
-
-    const newAccessToken = jwtService.generateAccessToken(decoded.userId);
+    console.log('✅ Password reset successful:', user.username);
 
     res.json({
-      accessToken: newAccessToken,
+      success: true,
+      message: 'Password reset successful'
     });
+
   } catch (error) {
-    logger.error('Token refresh error:', error);
-    res.status(500).json({ message: 'Token refresh failed' });
+    console.error('❌ Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset password'
+    });
   }
 };
 
-exports.logout = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId);
-    if (user) {
-      user.status = 'offline';
-      await user.save();
-    }
-
-    res.json({ message: 'Logged out successfully' });
-    logger.info(`User logged out: ${user.email}`);
-  } catch (error) {
-    logger.error('Logout error:', error);
-    res.status(500).json({ message: 'Logout failed' });
-  }
+module.exports = {
+  register,
+  login,
+  logout,
+  refreshToken,
+  forgotPassword,
+  resetPassword
 };

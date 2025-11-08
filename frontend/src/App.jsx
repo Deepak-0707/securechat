@@ -2,7 +2,6 @@ import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { ChatProvider } from './context/ChatContext.jsx';
-import { CallProvider } from './context/CallContext.jsx';
 import { useAuth } from './hooks/useAuth.js';
 import { initSocket } from './services/socket.js';
 import { Navbar } from './components/Common/Navbar.jsx';
@@ -65,9 +64,8 @@ export function App() {
     <Router>
       <AuthProvider>
         <ChatProvider>
-          <CallProvider>
+          
             <AppContent />
-          </CallProvider>
         </ChatProvider>
       </AuthProvider>
     </Router>

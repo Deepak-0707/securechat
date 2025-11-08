@@ -1,200 +1,395 @@
-const Message = require('../models/Message');
+/**
+ * CHAT CONTROLLER - Complete E2E Encryption Version
+ * 
+ * Location: backend/src/controllers/chatController.js
+ * 
+ * REPLACE YOUR ENTIRE chatController.js FILE WITH THIS
+ */
+
 const Conversation = require('../models/Conversation');
-const logger = require('../utils/logger');
+const Message = require('../models/Message');
 const crypto = require('crypto');
 
-exports.createConversation = async (req, res) => {
+/**
+ * GENERATE ENCRYPTION KEY
+ */
+const generateEncryptionKey = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+/**
+ * CREATE CONVERSATION
+ */
+const createConversation = async (req, res) => {
   try {
     const { participantIds, isGroup, groupName } = req.body;
-
-    const allParticipants = [req.user.userId, ...participantIds];
-
-    // Check if conversation already exists
-    let conversation = await Conversation.findOne({
-      participants: { $all: allParticipants },
-      isGroup: false,
-    });
-
-    if (conversation) {
-      return res.json({ conversation });
+    const currentUserId = req.user.id;
+    
+    if (!participantIds || participantIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Participant IDs are required'
+      });
     }
-
-    // Create new conversation with auto-generated encryption key
-    conversation = new Conversation({
+    
+    const allParticipants = [...new Set([currentUserId, ...participantIds])];
+    
+    if (!isGroup && allParticipants.length === 2) {
+      const existing = await Conversation.findOne({
+        isGroup: false,
+        participants: { $all: allParticipants, $size: 2 }
+      }).populate('participants', 'username email profilePicture');
+      
+      if (existing) {
+        return res.json({
+          success: true,
+          conversation: existing,
+          encryptionKey: existing.encryptionKey,
+          message: 'Conversation already exists'
+        });
+      }
+    }
+    
+    const encryptionKey = generateEncryptionKey();
+    console.log('✅ Generated key for new conversation');
+    
+    const conversation = new Conversation({
       participants: allParticipants,
       isGroup: isGroup || false,
-      groupName: isGroup ? groupName : null,
-      encryptionKey: crypto.randomBytes(32).toString('hex'), // Generate key explicitly
+      groupName: groupName || null,
+      encryptionKey: encryptionKey,
+      createdBy: currentUserId
     });
-
+    
     await conversation.save();
-
-    console.log(`✅ Conversation created with encryption key: ${conversation._id}`);
-
-    res.status(201).json({
-      message: 'Conversation created',
-      conversation,
+    await conversation.populate('participants', 'username email profilePicture');
+    
+    console.log('✅ Conversation created:', conversation._id);
+    
+    res.json({
+      success: true,
+      conversation: conversation,
+      encryptionKey: encryptionKey
     });
-
-    logger.info(`Conversation created: ${conversation._id}`);
+    
   } catch (error) {
-    logger.error('Create conversation error:', error);
-    res.status(500).json({ 
-      message: 'Error creating conversation',
-      error: error.message 
+    console.error('❌ Create conversation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create conversation'
     });
   }
 };
 
-exports.getConversations = async (req, res) => {
+/**
+ * GET CONVERSATIONS
+ */
+const getConversations = async (req, res) => {
   try {
+    const userId = req.user.id;
+    
     const conversations = await Conversation.find({
-      participants: req.user.userId,
+      participants: userId
     })
-      .populate('lastMessage')
-      .populate('participants', '-password')
-      .sort({ updatedAt: -1 });
-
-    res.json({ conversations });
+    .populate('participants', 'username email profilePicture status')
+    .populate('lastMessage')
+    .sort({ updatedAt: -1 });
+    
+    console.log(`✅ Retrieved ${conversations.length} conversations for user ${userId}`);
+    
+    res.json({
+      success: true,
+      conversations: conversations
+    });
+    
   } catch (error) {
-    logger.error('Get conversations error:', error);
-    res.status(500).json({ message: 'Error fetching conversations' });
+    console.error('❌ Get conversations error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch conversations'
+    });
   }
 };
 
-// Get encryption key for a conversation
-exports.getEncryptionKey = async (req, res) => {
+/**
+ * GET ENCRYPTION KEY
+ */
+const getEncryptionKey = async (req, res) => {
   try {
     const { conversationId } = req.params;
-
+    const userId = req.user.id;
+    
     const conversation = await Conversation.findById(conversationId);
-
+    
     if (!conversation) {
-      return res.status(404).json({ message: 'Conversation not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
     }
-
-    // Verify user is participant in this conversation
-    if (!conversation.participants.includes(req.user.userId)) {
-      return res.status(403).json({ message: 'Unauthorized access to conversation' });
+    
+    const isParticipant = conversation.participants.some(
+      p => p.toString() === userId.toString()
+    );
+    
+    if (!isParticipant) {
+      console.warn(`⚠️ Unauthorized key access attempt by ${userId}`);
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
     }
-
-    if (!conversation.encryptionKey) {
-      console.warn(`⚠️ Conversation ${conversationId} has no encryption key!`);
-      return res.status(500).json({ message: 'Encryption key not found for conversation' });
-    }
-
+    
+    console.log(`🔑 Providing key for conversation ${conversationId}`);
+    
     res.json({
-      encryptionKey: conversation.encryptionKey,
-      conversationId: conversation._id,
+      success: true,
+      encryptionKey: conversation.encryptionKey
     });
-
-    logger.info(`Encryption key retrieved for conversation: ${conversationId}`);
+    
   } catch (error) {
-    logger.error('Get encryption key error:', error);
-    res.status(500).json({ 
-      message: 'Error retrieving encryption key',
-      error: error.message 
+    console.error('❌ Get encryption key error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch encryption key'
     });
   }
 };
 
-exports.getMessages = async (req, res) => {
+/**
+ * GET MESSAGES
+ */
+const getMessages = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
-
-    const skip = (page - 1) * limit;
-
-    const messages = await Message.find({ conversationId })
-      .populate('senderId', '-password')
+    const userId = req.user.id;
+    const { limit = 50, before } = req.query;
+    
+    const conversation = await Conversation.findById(conversationId);
+    
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+    
+    const isParticipant = conversation.participants.some(
+      p => p.toString() === userId.toString()
+    );
+    
+    if (!isParticipant) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+    
+    const query = { conversationId: conversationId };
+    if (before) {
+      query.createdAt = { $lt: new Date(before) };
+    }
+    
+    const messages = await Message.find(query)
+      .populate('senderId', 'username profilePicture')
       .sort({ createdAt: -1 })
-      .skip(skip)
       .limit(parseInt(limit));
-
-    const totalMessages = await Message.countDocuments({ conversationId });
-
+    
+    console.log(`✅ Retrieved ${messages.length} messages for conversation ${conversationId}`);
+    
     res.json({
-      messages: messages.reverse(),
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: totalMessages,
-        pages: Math.ceil(totalMessages / limit),
-      },
+      success: true,
+      messages: messages.reverse()
     });
+    
   } catch (error) {
-    logger.error('Get messages error:', error);
-    res.status(500).json({ message: 'Error fetching messages' });
+    console.error('❌ Get messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch messages'
+    });
   }
 };
 
-exports.sendMessage = async (req, res) => {
+/**
+ * SEND MESSAGE - UPDATED FOR E2E ENCRYPTION
+ * 
+ * Now accepts: ciphertext, nonce, algorithm, version
+ */
+const sendMessage = async (req, res) => {
   try {
-    const { conversationId, encryptedContent, encryptionMetadata, messageType } = req.body;
-
+    const { 
+      conversationId, 
+      ciphertext,
+      nonce,
+      algorithm,
+      version,
+      messageType = 'text' 
+    } = req.body;
+    
+    const senderId = req.user.id;
+    
+    if (!conversationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Conversation ID is required'
+      });
+    }
+    
+    if (!ciphertext || !nonce) {
+      return res.status(400).json({
+        success: false,
+        message: 'Encrypted content (ciphertext and nonce) are required'
+      });
+    }
+    
+    const conversation = await Conversation.findById(conversationId);
+    
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+    
+    const isParticipant = conversation.participants.some(
+      p => p.toString() === senderId.toString()
+    );
+    
+    if (!isParticipant) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+    
     const message = new Message({
-      conversationId,
-      senderId: req.user.userId,
-      encryptedContent,
-      encryptionMetadata,
-      messageType: messageType || 'text',
+      conversationId: conversationId,
+      senderId: senderId,
+      ciphertext: ciphertext,
+      nonce: nonce,
+      encryptionMetadata: {
+        algorithm: algorithm || 'XSalsa20-Poly1305',
+        keyExchange: 'ECDH-X25519',
+        version: version || '2.0'
+      },
+      messageType: messageType
     });
-
+    
     await message.save();
-    await message.populate('senderId', '-password');
-
-    await Conversation.findByIdAndUpdate(conversationId, {
-      lastMessage: message._id,
-    });
-
-    res.status(201).json({
-      message: 'Message sent',
+    await message.populate('senderId', 'username profilePicture');
+    
+    conversation.lastMessage = message._id;
+    conversation.updatedAt = Date.now();
+    await conversation.save();
+    
+    console.log('✅ Encrypted message sent:', message._id);
+    
+    res.json({
+      success: true,
       data: message,
+      message: message
     });
-
-    logger.info(`Message sent in conversation: ${conversationId}`);
+    
   } catch (error) {
-    logger.error('Send message error:', error);
-    res.status(500).json({ message: 'Error sending message' });
+    console.error('❌ Send message error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send message',
+      error: error.message
+    });
   }
 };
 
-exports.markAsRead = async (req, res) => {
+/**
+ * MARK AS READ
+ */
+const markAsRead = async (req, res) => {
   try {
     const { messageIds } = req.body;
-
+    const userId = req.user.id;
+    
+    if (!messageIds || !Array.isArray(messageIds)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message IDs array is required'
+      });
+    }
+    
     await Message.updateMany(
-      { _id: { $in: messageIds } },
-      { isRead: true }
+      {
+        _id: { $in: messageIds },
+        senderId: { $ne: userId }
+      },
+      {
+        $addToSet: { readBy: userId }
+      }
     );
-
-    res.json({ message: 'Messages marked as read' });
+    
+    console.log(`✅ Marked ${messageIds.length} messages as read`);
+    
+    res.json({
+      success: true,
+      message: 'Messages marked as read'
+    });
+    
   } catch (error) {
-    logger.error('Mark as read error:', error);
-    res.status(500).json({ message: 'Error marking messages as read' });
+    console.error('❌ Mark as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark messages as read'
+    });
   }
 };
 
-exports.deleteMessage = async (req, res) => {
+/**
+ * DELETE MESSAGE
+ */
+const deleteMessage = async (req, res) => {
   try {
     const { messageId } = req.params;
-
+    const userId = req.user.id;
+    
     const message = await Message.findById(messageId);
-
+    
     if (!message) {
-      return res.status(404).json({ message: 'Message not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Message not found'
+      });
     }
-
-    if (message.senderId.toString() !== req.user.userId) {
-      return res.status(403).json({ message: 'Unauthorized' });
+    
+    if (message.senderId.toString() !== userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
     }
-
-    await Message.findByIdAndDelete(messageId);
-
-    res.json({ message: 'Message deleted' });
-    logger.info(`Message deleted: ${messageId}`);
+    
+    await message.deleteOne();
+    
+    console.log('✅ Message deleted:', messageId);
+    
+    res.json({
+      success: true,
+      message: 'Message deleted successfully'
+    });
+    
   } catch (error) {
-    logger.error('Delete message error:', error);
-    res.status(500).json({ message: 'Error deleting message' });
+    console.error('❌ Delete message error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete message'
+    });
   }
+};
+
+module.exports = {
+  createConversation,
+  getConversations,
+  getEncryptionKey,
+  getMessages,
+  sendMessage,
+  markAsRead,
+  deleteMessage
 };

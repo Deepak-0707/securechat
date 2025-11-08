@@ -27,17 +27,24 @@ export function UserSearch({ onConversationCreated }) {
     }
   };
 
-  const handleSelectUser = async (userId) => {
+  const handleSelectUser = async (user) => {
     try {
+      // Use _id (MongoDB) or id as fallback
+      const userId = user._id || user.id;
+      
+      console.log('Creating conversation with user:', userId);
+      
       const response = await chatAPI.createConversation({
         participantIds: [userId],
         isGroup: false
       });
+      
       onConversationCreated(response.data.conversation);
       setSearchQuery('');
       setSearchResults([]);
       toast.success('Conversation started');
     } catch (error) {
+      console.error('Failed to create conversation:', error);
       toast.error('Failed to create conversation');
     }
   };
@@ -59,9 +66,9 @@ export function UserSearch({ onConversationCreated }) {
         <div style={styles.results}>
           {searchResults.map((user) => (
             <div
-              key={user.id}
+              key={user._id || user.id}
               style={styles.resultItem}
-              onClick={() => handleSelectUser(user.id)}
+              onClick={() => handleSelectUser(user)}
             >
               <div style={styles.userInfo}>
                 <h4 style={styles.username}>{user.username}</h4>
@@ -71,7 +78,7 @@ export function UserSearch({ onConversationCreated }) {
                 ...styles.status,
                 background: user.status === 'online' ? 'var(--success)' : 'var(--text-secondary)'
               }}>
-                {user.status}
+                {user.status || 'offline'}
               </span>
             </div>
           ))}
@@ -110,7 +117,9 @@ const styles = {
     marginTop: '12px',
     background: 'white',
     borderRadius: '8px',
-    boxShadow: 'var(--shadow)'
+    boxShadow: 'var(--shadow)',
+    maxHeight: '400px',
+    overflowY: 'auto'
   },
   resultItem: {
     display: 'flex',
@@ -119,10 +128,7 @@ const styles = {
     padding: '12px',
     borderBottom: '1px solid var(--border-color)',
     cursor: 'pointer',
-    transition: 'background 0.2s',
-    '&:hover': {
-      background: 'var(--surface-dark)'
-    }
+    transition: 'background 0.2s'
   },
   userInfo: {
     flex: 1

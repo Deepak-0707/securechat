@@ -65,7 +65,7 @@ export const userAPI = {
   updateProfile: (data) => api.put('/users/profile', data),
   searchUsers: (query) => api.get(`/users/search?query=${query}`),
   updateStatus: (status) => api.put('/users/status', { status }),
-  uploadPublicKey: (publicKey) => api.post('/users/upload-public-key', { publicKey })
+  getPublicKey: (userId) => api.get(`/users/${userId}/public-key`)
 };
 
 // Chat endpoints

@@ -1,67 +1,124 @@
+/**
+ * CHAT WINDOW COMPONENT - WITH SIMPLE DEMO BUTTON
+ * 
+ * This version doesn't need EncryptionDemoPanel.jsx
+ * It shows encryption details in an alert/console for now
+ * 
+ * COPY THIS IF YOU HAVEN'T CREATED EncryptionDemoPanel.jsx YET
+ */
+
 import React, { useEffect, useState } from 'react';
+import { EncryptionDemoPanel } from './EncryptionDemoPanel.jsx';
 import { useAuth } from '../../hooks/useAuth.js';
 import { useChat } from '../../hooks/useChat.js';
-import { useCall } from '../../hooks/useCall.js';
 import { useSocket } from '../../hooks/useSocket.js';
 import { formatTime } from '../../utils/helpers.js';
-import { FiSend, FiPhone, FiVideo } from 'react-icons/fi';
-import { chatAPI } from '../../services/api.js';
-import { storeConversationKey, getConversationKey, decryptMessage, encryptMessage } from '../../services/encryption.js';
-import { callHandler } from "./CallHandler.js";
-import { CallModal } from './CallModels.jsx';
-import CryptoJS from 'crypto-js';
+import { FiSend } from 'react-icons/fi';
+import { userAPI } from '../../services/api.js';
+import { 
+  getMyKeys,
+  computeSharedSecret,
+  deriveConversationKey,
+  storeConversationKey, 
+  getConversationKey, 
+  encryptMessage,
+  decryptMessage 
+} from '../../services/e2eEncryption.js';
 import toast from 'react-hot-toast';
 
-export function ChatWindow({ conversationId, recipientName }) {
+export function ChatWindow({ conversationId, recipientName, recipientId }) {
   const { user } = useAuth();
   const { messages, setMessages, sendMessage, fetchMessages } = useChat();
   const [messageInput, setMessageInput] = useState('');
   const [typingUsers, setTypingUsers] = useState(new Set());
   const [keyLoaded, setKeyLoaded] = useState(false);
+  const [keyExchangeStatus, setKeyExchangeStatus] = useState('idle');
 
-  // ADDED: Fetch and store encryption key when conversation loads
+  /**
+   * PERFORM ECDH KEY EXCHANGE
+   */
   useEffect(() => {
-    if (conversationId) {
-      const loadEncryptionKey = async () => {
+    if (conversationId && recipientId) {
+      const performKeyExchange = async () => {
         try {
-          console.log('🔐 Fetching encryption key for conversation:', conversationId);
-          const response = await chatAPI.getEncryptionKey(conversationId);
+          setKeyExchangeStatus('exchanging');
+          console.log('🤝 Starting ECDH key exchange...');
           
-          console.log('📦 Response:', response);
-          
-          if (response.data && response.data.encryptionKey) {
-            storeConversationKey(conversationId, response.data.encryptionKey);
-            setKeyLoaded(true);
-            console.log('✅ Encryption key loaded and stored:', response.data.encryptionKey.substring(0, 10) + '...');
-            toast.success('Encryption key loaded');
-          } else {
-            console.error('❌ No encryption key in response');
-            toast.error('No encryption key received');
+          const myKeys = getMyKeys();
+          if (!myKeys) {
+            toast.error('Your encryption keys not found');
+            console.error('❌ No local keys found');
+            return;
           }
+          
+          console.log('✅ My keys loaded');
+          
+          console.log('📥 Fetching recipient public key...');
+          const response = await userAPI.getPublicKey(recipientId);
+          
+          if (!response.data || !response.data.publicKey) {
+            toast.error('Recipient public key not found');
+            console.error('❌ Recipient has no public key');
+            return;
+          }
+          
+          const recipientPublicKey = response.data.publicKey;
+          console.log('✅ Recipient public key received');
+          
+          console.log('🔒 Computing shared secret...');
+          const sharedSecret = computeSharedSecret(
+            myKeys.privateKey,
+            recipientPublicKey
+          );
+          
+          console.log('✅ Shared secret computed');
+          
+          console.log('🔑 Deriving conversation key...');
+          const conversationKey = deriveConversationKey(
+            sharedSecret,
+            conversationId
+          );
+          
+          console.log('✅ Conversation key derived');
+          
+          storeConversationKey(conversationId, conversationKey);
+          
+          setKeyLoaded(true);
+          setKeyExchangeStatus('complete');
+          console.log('✅ E2E encryption ready');
+          toast.success('🔒 Encrypted connection established');
+          
         } catch (error) {
-          console.error('❌ Failed to load encryption key:', error);
-          console.error('Error details:', error.response?.data || error.message);
-          toast.error('Failed to load encryption key: ' + (error.response?.data?.message || error.message));
+          setKeyExchangeStatus('failed');
+          console.error('❌ Key exchange failed:', error);
+          toast.error('Failed to establish encryption');
         }
       };
-
-      loadEncryptionKey();
+      
+      performKeyExchange();
     }
-  }, [conversationId]);
+  }, [conversationId, recipientId]);
 
-  // Load messages when conversation changes
+  /**
+   * LOAD MESSAGES
+   */
   useEffect(() => {
     if (conversationId) {
       fetchMessages(conversationId);
     }
   }, [conversationId]);
 
-  // Listen for incoming messages via socket
+  /**
+   * LISTEN FOR INCOMING MESSAGES
+   */
   useSocket('message:receive', (data) => {
-    console.log('📨 Received message:', data);
+    console.log('📨 Received encrypted message');
     setMessages(prev => [...prev, data]);
   });
 
+  /**
+   * TYPING INDICATORS
+   */
   useSocket('typing:active', ({ userId }) => {
     setTypingUsers(prev => new Set(prev).add(userId));
   });
@@ -74,80 +131,152 @@ export function ChatWindow({ conversationId, recipientName }) {
     });
   });
 
+  /**
+   * SEND MESSAGE (WITH XSalsa20-Poly1305 ENCRYPTION)
+   */
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!messageInput.trim()) return;
 
-    // ADDED: Check if encryption key is loaded
     if (!keyLoaded) {
-      toast.error('Encryption key not ready. Please wait...');
+      toast.error('Encryption not ready');
       return;
     }
 
     try {
-      // MODIFIED: Get conversation-specific key
       const key = getConversationKey(conversationId);
       if (!key) {
         toast.error('Encryption key not found');
         return;
       }
 
-      // Encrypt with conversation key
-      const message = { text: messageInput };
-      const encryptedContent = CryptoJS.AES.encrypt(
-        JSON.stringify(message),
-        key
-      ).toString();
+      const encrypted = encryptMessage(messageInput, key);
 
-      if (!encryptedContent) {
+      if (!encrypted) {
         toast.error('Encryption failed');
         return;
       }
 
-      await sendMessage(conversationId, {
-        encryptedContent: encryptedContent,
-        encryptionMetadata: {
-          algorithm: 'AES',
-          version: '1'
-        },
+      console.log('📤 Sending encrypted message...');
+      
+      const messagePayload = {
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        algorithm: 'XSalsa20-Poly1305',
+        version: '2.0',
         messageType: 'text'
+      };
+      
+      console.log('📦 Payload:', {
+        conversationId,
+        ciphertext: encrypted.ciphertext.substring(0, 30) + '...',
+        nonce: encrypted.nonce.substring(0, 30) + '...',
+        algorithm: 'XSalsa20-Poly1305'
       });
 
+      const result = await sendMessage(conversationId, messagePayload);
+
+      console.log('✅ Message sent successfully:', result);
       setMessageInput('');
+
     } catch (error) {
-      console.error('Send message error:', error);
-      toast.error('Failed to send message');
+      console.error('❌ Send failed:', error);
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
+      if (error.response?.status === 400) {
+        toast.error('Invalid message format - check console');
+      } else if (error.response?.status === 404) {
+        toast.error('Conversation not found');
+      } else {
+        toast.error('Failed to send message');
+      }
     }
   };
 
-  const handleTyping = () => {
-    // Emit typing event to socket
+  /**
+   * SHOW ENCRYPTION DEMO (Simple Version)
+   */
+  const showEncryptionDemo = async () => {
+    try {
+      const myKeys = getMyKeys();
+      const recipientResponse = await userAPI.getPublicKey(recipientId);
+      const myPublicResponse = await userAPI.getPublicKey(user.id || user._id);
+      const sharedSecret = computeSharedSecret(myKeys.privateKey, recipientResponse.data.publicKey);
+      const conversationKey = getConversationKey(conversationId);
+      
+      // Test encryption
+      const testMessage = "Hello, this is a test!";
+      const encrypted = encryptMessage(testMessage, conversationKey);
+      const decrypted = decryptMessage(encrypted.ciphertext, encrypted.nonce, conversationKey);
+      
+      console.log('=== ENCRYPTION DEMONSTRATION ===');
+      console.log('1️⃣ MY PUBLIC KEY (in MongoDB):', myPublicResponse.data.publicKey);
+      console.log('2️⃣ MY PRIVATE KEY (in browser):', myKeys.privateKey);
+      console.log('3️⃣ RECIPIENT PUBLIC KEY:', recipientResponse.data.publicKey);
+      console.log('4️⃣ SHARED SECRET:', sharedSecret);
+      console.log('5️⃣ CONVERSATION KEY:', conversationKey);
+      console.log('6️⃣ TEST ENCRYPTION:');
+      console.log('   Original:', testMessage);
+      console.log('   Ciphertext:', encrypted.ciphertext);
+      console.log('   Nonce:', encrypted.nonce);
+      console.log('   Decrypted:', decrypted);
+      console.log('   Match:', testMessage === decrypted ? '✅ YES' : '❌ NO');
+      console.log('================================');
+      
+      alert('✅ Encryption details logged to console!\n\nPress F12 to open DevTools and see:\n- Your keys\n- Shared secret\n- Encryption/decryption demo\n\nCheck the Console tab!');
+      
+    } catch (error) {
+      console.error('Demo failed:', error);
+      alert('Failed to show demo. Check console for details.');
+    }
   };
 
-  // MODIFIED: Decrypt messages using conversation-specific key
+  /**
+   * TYPING INDICATOR
+   */
+  const handleTyping = () => {
+    // Emit typing event (implement socket emission here if needed)
+  };
+
+  /**
+   * DECRYPT MESSAGES FOR DISPLAY
+   */
   const displayMessages = messages.map(msg => {
-    let decryptedText = 'Could not decrypt message';
+    let decryptedText = 'Could not decrypt';
     
     try {
-      if (msg.encryptedContent) {
+      if (msg.ciphertext && msg.nonce) {
         const key = getConversationKey(conversationId);
+        
         if (key) {
-          const decrypted = decryptMessage(msg.encryptedContent, key);
-          if (decrypted && decrypted.text) {
-            decryptedText = decrypted.text;
-          } else {
-            console.warn('⚠️ Decryption returned empty result for message:', msg._id);
+          decryptedText = decryptMessage(
+            msg.ciphertext,
+            msg.nonce,
+            key
+          );
+          
+          if (!decryptedText) {
+            decryptedText = 'Decryption failed';
           }
         } else {
-          console.warn('⚠️ No encryption key available for decryption');
+          console.warn('⚠️ No decryption key');
+          decryptedText = 'No decryption key';
         }
+      } else if (msg.encryptedContent) {
+        decryptedText = '[Old format - cannot decrypt]';
+        console.warn('⚠️ Message has old encryptedContent format');
       }
     } catch (error) {
-      console.error('Decryption error:', error);
+      console.error('❌ Decryption error:', error);
+      decryptedText = 'Decryption error';
     }
 
     const currentUserId = user?.id || user?._id;
-    const senderId = msg.senderId?._id || msg.senderId?.id || msg.senderId;
+    const senderId = msg.senderId?._id || msg.senderId?.id || msg.senderId || msg.sender?._id || msg.sender?.id || msg.sender;
     const isOwn = senderId === currentUserId;
 
     return {
@@ -157,19 +286,41 @@ export function ChatWindow({ conversationId, recipientName }) {
     };
   });
 
+  /**
+   * RENDER
+   */
   return (
     <div style={styles.container}>
+      {/* Header */}
       <div style={styles.header}>
-        <div>
+        <div style={styles.headerLeft}>
           <h2 style={styles.name}>{recipientName}</h2>
-          {!keyLoaded && <p style={styles.loadingText}>Loading encryption...</p>}
+          {keyExchangeStatus === 'exchanging' && (
+            <p style={styles.loadingText}>🔒 Establishing encryption...</p>
+          )}
+          {keyExchangeStatus === 'complete' && (
+            <p style={styles.encryptedBadge}>🔒 End-to-end encrypted</p>
+          )}
+          {keyExchangeStatus === 'failed' && (
+            <p style={styles.errorText}>❌ Encryption failed</p>
+          )}
         </div>
-        <div style={styles.actions}>
-          <button style={styles.iconButton}><FiPhone size={20} /></button>
-          <button style={styles.iconButton}><FiVideo size={20} /></button>
+        
+        {/* Demo Button */}
+        <div style={styles.headerRight}>
+          {keyLoaded && (
+            <button 
+              onClick={showEncryptionDemo} 
+              style={styles.demoButton}
+              title="Show encryption details in console"
+            >
+              🔐 Show Demo
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Messages */}
       <div style={styles.messagesContainer}>
         {displayMessages.length === 0 ? (
           <div style={styles.emptyState}>
@@ -192,14 +343,16 @@ export function ChatWindow({ conversationId, recipientName }) {
             </div>
           ))
         )}
+
         {typingUsers.size > 0 && (
           <div style={styles.typingIndicator}>
-            <span>Someone is typing</span>
+            <span>Typing</span>
             <span style={styles.dots}>•••</span>
           </div>
         )}
       </div>
 
+      {/* Input */}
       <form onSubmit={handleSendMessage} style={styles.inputArea}>
         <input
           type="text"
@@ -212,8 +365,8 @@ export function ChatWindow({ conversationId, recipientName }) {
           style={styles.input}
           disabled={!keyLoaded}
         />
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           style={styles.sendButton}
           disabled={!keyLoaded}
         >
@@ -224,6 +377,9 @@ export function ChatWindow({ conversationId, recipientName }) {
   );
 }
 
+/**
+ * STYLES
+ */
 const styles = {
   container: {
     display: 'flex',
@@ -239,6 +395,14 @@ const styles = {
     borderBottom: '1px solid var(--border-color)',
     boxShadow: 'var(--shadow)'
   },
+  headerLeft: {
+    flex: 1
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px'
+  },
   name: {
     fontSize: '18px',
     fontWeight: '600',
@@ -250,21 +414,17 @@ const styles = {
     color: 'var(--text-secondary)',
     margin: '4px 0 0 0'
   },
-  actions: {
-    display: 'flex',
-    gap: '12px'
+  encryptedBadge: {
+    fontSize: '12px',
+    color: 'var(--success)',
+    margin: '4px 0 0 0',
+    fontWeight: '500'
   },
-  iconButton: {
-    background: 'var(--surface-dark)',
-    border: 'none',
-    padding: '8px',
-    borderRadius: '50%',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: 'var(--primary-color)',
-    transition: 'all 0.3s'
+  errorText: {
+    fontSize: '12px',
+    color: 'var(--error)',
+    margin: '4px 0 0 0',
+    fontWeight: '500'
   },
   messagesContainer: {
     flex: 1,
@@ -340,5 +500,20 @@ const styles = {
     justifyContent: 'center',
     minWidth: '48px',
     minHeight: '48px'
+  },
+  demoButton: {
+    background: '#2196F3',
+    color: 'white',
+    border: 'none',
+    padding: '8px 16px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: '500',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    transition: 'background 0.2s',
+    whiteSpace: 'nowrap'
   }
 };

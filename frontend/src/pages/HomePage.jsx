@@ -1,18 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { useChat } from '../hooks/useChat.js';
 import { useAuth } from '../hooks/useAuth.js';
-import { useCall } from '../hooks/useCall.js';
 import { ChatList } from '../components/Chat/ChatList.jsx';
 import { ChatWindow } from '../components/Chat/ChatWindow.jsx';
 import { UserSearch } from '../components/Chat/UserSearch.jsx';
 import { socketOn, socketOff } from '../services/socket.js';
-import { IncomingCall } from '../components/Call/IncomingCall.jsx';
 import toast from 'react-hot-toast';
 
 export function HomePage() {
   const { currentConversation, setCurrentConversation, fetchConversations } = useChat();
   const { user } = useAuth();
   const [selectedConvId, setSelectedConvId] = useState(null);
+  const [selectedRecipientId, setSelectedRecipientId] = useState(null);
 
   useEffect(() => {
     fetchConversations();
@@ -21,11 +20,29 @@ export function HomePage() {
   const handleSelectConversation = (conv) => {
     setCurrentConversation(conv);
     setSelectedConvId(conv._id);
+    
+    // Get recipient ID
+    const currentUserId = user?.id || user?._id;
+    const recipient = conv.participants.find(p => {
+      const pId = p._id || p.id || p;
+      return pId.toString() !== currentUserId.toString();
+    });
+    
+    setSelectedRecipientId(recipient?._id || recipient?.id || recipient);
   };
 
   const handleConversationCreated = (conv) => {
     setCurrentConversation(conv);
     setSelectedConvId(conv._id);
+    
+    // Get recipient ID for new conversation
+    const currentUserId = user?.id || user?._id;
+    const recipient = conv.participants.find(p => {
+      const pId = p._id || p.id || p;
+      return pId.toString() !== currentUserId.toString();
+    });
+    
+    setSelectedRecipientId(recipient?._id || recipient?.id || recipient);
     fetchConversations();
   };
 
@@ -69,6 +86,7 @@ export function HomePage() {
           <ChatWindow
             conversationId={selectedConvId}
             recipientName={getRecipientName(currentConversation)}
+            recipientId={selectedRecipientId}
           />
         ) : (
           <div style={styles.emptyState}>
